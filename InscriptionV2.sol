@@ -224,7 +224,7 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
     address public swapAddress;
     address public wnuls = address(0x888279a0df02189078e3E68fbD93D35183E1Fc69);   
     address public pairAddress;
-    address public routerAddress = address(0xcC81d3B057c16DFfe778D2d342CfF40d33bD69A7); //outer address
+    address public routerAddress = address(0xcC81d3B057c16DFfe778D2d342CfF40d33bD69A7); //router address
 
     uint public flag = 0;
 
