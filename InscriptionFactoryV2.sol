@@ -1,370 +1,406 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "./InscriptionV2.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./Logarithm.sol";
 import "./TransferHelper.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
-interface IFactory {
-    struct Token {
-        string tick;            // same as symbol in ERC20
-        string name;            // full name of token
-        uint256 cap;            // Hard cap of token
-        uint256 limitPerMint;   // Limitation per mint
-        uint256 maxMintSize;    // // max mint size, that means the max mint quantity is: maxMintSize * limitPerMint
-        uint256 inscriptionId;  // Inscription id
-        uint256 freezeTime;
-        address onlyContractAddress;
-        uint256 onlyMinQuantity;
-        uint256 crowdFundingRate;
-        address crowdfundingAddress;
-        address minter;         // The minter of this token
-        address addr;           // Contract address of inscribed token 
-        uint256 timestamp;      // Inscribe timestamp
-    }
-    function getInscriptionAmount() external view returns(uint256);
-    function getIncriptionIdByTick(string memory _tick) external view returns(uint256);
-    function getIncriptionById(uint256 _id) external view returns(Token memory, uint256);
+// This is common token interface, get balance of owner's token by ERC20/ERC721.
+interface ICommonToken {
+    function balanceOf(address owner) external returns(uint256);
 }
 
-contract InscriptionFactoryV2 is Ownable{
-    using Counters for Counters.Counter;
-    Counters.Counter private _inscriptionNumbers;
-
-    uint8 public maxTickSize = 4;                 // tick(symbol) length is 4.
-    uint8 public maxNameSize = 20;                // max name length is 50.
-    uint256 public baseFee = 1000000000000000000;    // Will charge 1 NULS  as extra min tip from the second time of mint in the frozen period. And this tip will be double for each mint.
-    uint256 public inscriptionFee = 10000000000000000000; // Will charge 10 NULS as inscription fee
-    uint256 public fundingCommission = 100;       // commission rate of fund raising, 100 means 1%
-    uint256 public maxFrozenTime = 86400;         // The max frozen time is 1 day
-
-    mapping(uint256 => Token) private inscriptions; // key is inscription id, value is token data
-    mapping(string => uint256) private ticks;       // Key is tick, value is inscription id
-    address public factoryV1;                       // The address of factory v1
-    bool public launched = false;                   // Whether the factory is launched
-
-    event DeployInscription(
-        uint256 indexed id, 
-        string tick, 
-        string name, 
-        uint256 cap, 
-        uint256 limitPerMint, 
-        address inscriptionAddress, 
-        uint256 timestamp
+interface IPancakeRouter02 {
+   
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (
+        uint amountToken,
+        uint amountETH,
+        uint liquidity
     );
+}
 
-    struct Token {
-        string tick;            // same as symbol in ERC20
-        string name;            // full name of token
-        uint256 cap;            // Hard cap of token
-        uint256 limitPerMint;   // Limitation per mint
-        uint256 maxMintSize;    // // max mint size, that means the max mint quantity is: maxMintSize * limitPerMint
-        uint256 inscriptionId;  // Inscription id
-        uint256 freezeTime;
-        address onlyContractAddress;
-        uint256 onlyMinQuantity;
-        uint256 crowdFundingRate;
-        address crowdfundingAddress;
-        address minter;         // The minter of this token
-        address addr;           // Contract address of inscribed token 
-        uint256 timestamp;      // Inscribe timestamp
+interface IPancakeFactory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint256);
+
+    function feeTo() external view returns (address);
+
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+
+    function allPairs(uint256) external view returns (address pair);
+
+    function allPairsLength() external view returns (uint256);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+
+    function setFeeToSetter(address) external;
+
+    function INIT_CODE_PAIR_HASH() external view returns (bytes32);
+}
+
+contract WNULS {
+    string public name     = "Wrapped NULS";
+    string public symbol   = "WNULS";
+    uint8  public decimals = 18;
+
+    event  Approval(address indexed src, address indexed guy, uint wad);
+    event  Transfer(address indexed src, address indexed dst, uint wad);
+    event  Deposit(address indexed dst, uint wad);
+    event  Withdrawal(address indexed src, uint wad);
+
+    mapping (address => uint)                       public  balanceOf;
+    mapping (address => mapping (address => uint))  public  allowance;
+
+
+    function deposit() public payable {
+        balanceOf[msg.sender] += msg.value;
+        emit Deposit(msg.sender, msg.value);
+    }
+    function withdraw(uint wad) public {
+        require(balanceOf[msg.sender] >= wad);
+        balanceOf[msg.sender] -= wad;
+        payable(msg.sender).transfer(wad);
+        emit Withdrawal(msg.sender, wad);
     }
 
-    constructor(address _factoryV1) {
-        factoryV1 = _factoryV1;
-        // The inscription id will be from 1, not zero.
-        _inscriptionNumbers.increment();
+    function totalSupply() public view returns (uint) {
+        return address(this).balance;
     }
 
-    // Let this contract accept NULS as tip
-    receive() external payable {}
-    
-    function deploy(
-        string memory _tick,
-        string memory _name,
-        uint256 _cap,
-        uint256 _limitPerMint,
-        uint256 _maxMintSize, // The max lots of each mint
-        uint256 _freezeTime, // Freeze seconds between two mint, during this freezing period, the mint fee will be increased 
-        address _onlyContractAddress, // Only the holder of this asset can mint, optional
-        uint256 _onlyMinQuantity, // The min quantity of asset for mint, optional
-        uint256 _crowdFundingRate,
-        address _crowdFundingAddress
-    ) payable external returns (address _inscriptionAddress) {
-        require(launched, "Factory is not launched");
+    function approve(address guy, uint wad) public returns (bool) {
+        allowance[msg.sender][guy] = wad;
+        emit Approval(msg.sender, guy, wad);
+        return true;
+    }
 
-        require(strlen(_tick) == maxTickSize, "Tick lenght should be 4");
-        require(strlen(_name) <= maxNameSize, "Name lenght should be less than 20");
-        require(_cap >= _limitPerMint, "Limit per mint exceed cap");
-        if (_onlyContractAddress != address(0)) {
-            require(_onlyMinQuantity > 0, "Only min quantity should be greater than zero");
-        } else {
-            require(_onlyMinQuantity == 0, "Only min quantity should be zero");
-        }
-        require(_freezeTime <= maxFrozenTime, "Freeze time exceed max frozen time");
-        if (_maxMintSize > 1) {
-            require(_freezeTime == 0, "Freeze time should be zero when max mint size is greater than 1");
-        }
-        if (_crowdFundingRate > 0 || _crowdFundingAddress != address(0)) {
-            require(_crowdFundingAddress != address(0), "Crowd funding address should not be zero");
-            require(_crowdFundingRate > 0, "Crowd funding rate should be greater than zero");
+    function transfer(address dst, uint wad) public returns (bool) {
+        return transferFrom(msg.sender, dst, wad);
+    }
+
+    function transferFrom(address src, address dst, uint wad)
+        public
+        returns (bool)
+    {
+        require(balanceOf[src] >= wad);
+
+        if (src != msg.sender && allowance[src][msg.sender] != type(uint).max) {
+            require(allowance[src][msg.sender] >= wad);
+            allowance[src][msg.sender] -= wad;
         }
 
-        _tick = toLower(_tick);
-        require(this.getIncriptionIdByTick(_tick) == 0, "tick is existed");
-        require(IFactory(factoryV1).getIncriptionIdByTick(_tick) == 0, "tick is existed in factory v1");
+        balanceOf[src] -= wad;
+        balanceOf[dst] += wad;
 
-        require(msg.value >= inscriptionFee, "Insufficient inscription fee");
+        emit Transfer(src, dst, wad);
 
-        // Create inscription contract
-        bytes memory bytecode = type(InscriptionV2).creationCode;
-        uint256 _id = _inscriptionNumbers.current();
-		bytecode = abi.encodePacked(bytecode, abi.encode(
-            _name, 
-            _tick, 
-            _cap, 
-            _limitPerMint, 
-            _id, 
-            _maxMintSize,
-            _freezeTime,
-            _onlyContractAddress,
-            _onlyMinQuantity,
-            baseFee,
-            fundingCommission,
-            _crowdFundingRate,
-            _crowdFundingAddress,
-            address(this)
-        ));
-		bytes32 salt = keccak256(abi.encodePacked(_id));
-		assembly ("memory-safe") {
-			_inscriptionAddress := create2(0, add(bytecode, 32), mload(bytecode), salt)
-			if iszero(extcodesize(_inscriptionAddress)) {
-				revert(0, 0)
-			}
-		}
-        inscriptions[_id] = Token(
-            _tick, 
-            _name, 
-            _cap, 
-            _limitPerMint, 
-            _maxMintSize,
-            _id,
-            _freezeTime,
-            _onlyContractAddress,
-            _onlyMinQuantity,
-            _crowdFundingRate,
-            _crowdFundingAddress,
-            msg.sender,
-            _inscriptionAddress, 
-            block.timestamp
+        return true;
+    }
+}
+
+interface IPancakePair {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
         );
-        ticks[_tick] = _id;
 
-        _inscriptionNumbers.increment();
-        emit DeployInscription(_id, _tick, _name, _cap, _limitPerMint, _inscriptionAddress, block.timestamp);
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+
+    function burn(address to) external returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function skim(address to) external;
+
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+// This contract is extended from ERC20
+contract InscriptionV2 is ERC20, ReentrancyGuard {
+    using Logarithm for int256;
+    uint256 public cap;                 // Max amount
+    uint256 public limitPerMint;        // Limitaion of each mint
+    uint256 public inscriptionId;       // Inscription Id
+    uint256 public maxMintSize;         // max mint size, that means the max mint quantity is: maxMintSize * limitPerMint
+    uint256 public freezeTime;          // The frozen time (interval) between two mints is a fixed number of seconds. You can mint, but you will need to pay an additional mint fee, and this fee will be double for each mint.
+    address public onlyContractAddress; // Only addresses that hold these assets can mint
+    uint256 public onlyMinQuantity;     // Only addresses that the quantity of assets hold more than this amount can mint
+    uint256 public baseFee;             // base fee of the second mint after frozen interval. The first mint after frozen time is free.
+    uint256 public fundingCommission;   // commission rate of fund raising, 100 means 1%
+    uint256 public crowdFundingRate;    // rate of crowdfunding
+    address payable public crowdfundingAddress; // receiving fee of crowdfunding
+    address payable public inscriptionFactory;
+    uint256 public percent;    
+    mapping(address => uint256) public lastMintTimestamp;   // record the last mint timestamp of account
+    mapping(address => uint256) public lastMintFee;           // record the last mint fee
+    address public swapAddress;
+    address public wnuls = address(0x888279a0df02189078e3E68fbD93D35183E1Fc69);   
+    address public pairAddress;
+    address public routerAddress = address(0xcC81d3B057c16DFfe778D2d342CfF40d33bD69A7); //outer address
+
+    uint public flag = 0;
+
+    constructor(
+        string memory _name,            // token name
+        string memory _tick,            // token tick, same as symbol. must be 4 characters.
+        uint256 _cap,                   // Max amount
+        uint256 _limitPerMint,          // Limitaion of each mint
+        uint256 _inscriptionId,         // Inscription Id
+        uint256 _maxMintSize,           // max mint size, that means the max mint quantity is: maxMintSize * limitPerMint. This is only availabe for non-frozen time token.
+        uint256 _freezeTime,            // The frozen time (interval) between two mints is a fixed number of seconds. You can mint, but you will need to pay an additional mint fee, and this fee will be double for each mint.
+        address _onlyContractAddress,   // Only addresses that hold these assets can mint
+        uint256 _onlyMinQuantity,       // Only addresses that the quantity of assets hold more than this amount can mint
+        uint256 _baseFee,               // base fee of the second mint after frozen interval. The first mint after frozen time is free.
+        uint256 _fundingCommission,     // commission rate of fund raising, 100 means 1%
+        uint256 _crowdFundingRate,      // rate of crowdfunding
+        address payable _crowdFundingAddress,   // receiving fee of crowdfunding
+        address payable _inscriptionFactory,
+        uint256 _percent,
+        address _swapAddress
+    ) ERC20(_name, _tick) {
+        require(_cap >= _limitPerMint, "Limit per mint exceed cap");
+        cap = _cap;
+        limitPerMint = _limitPerMint;
+        inscriptionId = _inscriptionId;
+        maxMintSize = _maxMintSize;
+        freezeTime = _freezeTime;
+        onlyContractAddress = _onlyContractAddress;
+        onlyMinQuantity = _onlyMinQuantity;
+        baseFee = _baseFee;
+        fundingCommission = _fundingCommission;
+        crowdFundingRate = _crowdFundingRate;
+        percent = _percent; 
+        crowdfundingAddress = _crowdFundingAddress;
+        inscriptionFactory = _inscriptionFactory;
+        swapAddress = _swapAddress;
     }
 
-    function getInscriptionAmount() external view returns(uint256) {
-        return _inscriptionNumbers.current() - 1;
-    }
-
-    function getIncriptionIdByTick(string memory _tick) external view returns(uint256) {
-        return ticks[toLower(_tick)];
-    }
-
-    function getIncriptionById(uint256 _id) external view returns(Token memory, uint256) {
-        Token memory token = inscriptions[_id];
-        return (inscriptions[_id], InscriptionV2(token.addr).totalSupply());
-    }
-
-    function getIncriptionByTick(string memory _tick) external view returns(Token memory, uint256) {
-        Token memory token = inscriptions[this.getIncriptionIdByTick(_tick)];
-        return (inscriptions[this.getIncriptionIdByTick(_tick)], InscriptionV2(token.addr).totalSupply());
-    }
-
-    function getInscriptionAmountByType(uint256 _type) external view returns(uint256) {
-        require(_type < 3, "type is 0-2");
-        uint256 totalInscription = this.getInscriptionAmount();
-        uint256 count = 0;
-        for(uint256 i = 1; i <= totalInscription; i++) {
-            (Token memory _token, uint256 _totalSupply) = this.getIncriptionById(i);
-            if(_type == 1 && _totalSupply == _token.cap) continue;
-            else if(_type == 2 && _totalSupply < _token.cap) continue;
-            else count++;
-        }
-        return count;
-    }
     
-    // Fetch inscription data by page no, page size, type and search keyword
-    function getIncriptions(
-        uint256 _pageNo, 
-        uint256 _pageSize, 
-        uint256 _type, // 0- all, 1- in-process, 2- ended
-        string memory _searchBy
-    ) external view returns(
-        Token[] memory inscriptions_, 
-        uint256[] memory totalSupplies_
-    ) {
-        // if _searchBy is not empty, the _pageNo and _pageSize should be set to 1
-        require(_type < 3, "type is 0-2");
-        uint256 totalInscription = this.getInscriptionAmount();
-        uint256 pages = (totalInscription - 1) / _pageSize + 1;
-        require(_pageNo > 0 && _pageSize > 0 && pages > 0 && _pageNo <= pages, "Params wrong");
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        if(crowdFundingRate > 0 && percent > 0 ) {
+            require(flag == 0, "token is locking");
+        }
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
 
-        inscriptions_ = new Token[](_pageSize);
-        totalSupplies_ = new uint256[](_pageSize);
+    function transferFrom(address from, address to, uint256 amount) public virtual override returns (bool) {
+        if(crowdFundingRate > 0 && percent > 0 ) {
+            require(flag == 0, "token is locking");
+        }
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
 
-        Token[] memory _inscriptions = new Token[](totalInscription);
-        uint256[] memory _totalSupplies = new uint256[](totalInscription);
+   
 
-        uint256 index = 0;
-        for(uint256 i = 1; i <= totalInscription; i++) {
-            (Token memory _token, uint256 _totalSupply) = this.getIncriptionById(i);
-            if(_type == 1 && _totalSupply == _token.cap) continue;
-            else if(_type == 2 && _totalSupply < _token.cap) continue;
-            else if(!compareStrings(_searchBy, "") && !compareStrings(toLower(_searchBy), _token.tick)) continue;
-            else {
-                _inscriptions[index] = _token;
-                _totalSupplies[index] = _totalSupply;
-                index++;
+    function mint(address _to) payable public nonReentrant {
+        require(msg.sender == tx.origin, "only EOA");
+        require(msg.sender == _to, "only self mint");
+        // Check if the quantity after mint will exceed the cap
+        require(totalSupply() + limitPerMint <= cap, "Touched cap");
+        // Check if the assets in the msg.sender is satisfied
+        require(onlyContractAddress == address(0x0) || ICommonToken(onlyContractAddress).balanceOf(msg.sender) >= onlyMinQuantity, "You don't have required assets");
+
+        if(lastMintTimestamp[msg.sender] + freezeTime > block.timestamp) {
+            // The min extra tip is double of last mint fee
+            lastMintFee[msg.sender] = lastMintFee[msg.sender] == 0 ? baseFee : lastMintFee[msg.sender] * 2;
+            // Transfer the fee to the crowdfunding address
+            if(crowdFundingRate > 0) {
+                // Check if the tip is high than the min extra fee
+                require(msg.value >= crowdFundingRate + lastMintFee[msg.sender], "Send some NULS as fee and crowdfunding");
+                _dispatchFunding(crowdFundingRate);
             }
-        }
-
-        for(uint256 i = 0; i < _pageSize; i++) {
-            uint256 id = (_pageNo - 1) * _pageSize + i;
-            if(id < index) {
-                inscriptions_[i] = _inscriptions[id];
-                totalSupplies_[i] = _totalSupplies[id];
+            // double check the tip
+            require(msg.value >= crowdFundingRate + lastMintFee[msg.sender], "Insufficient mint fee");
+            // Transfer the tip to InscriptionFactory smart contract
+            if(msg.value - crowdFundingRate > 0) TransferHelper.safeTransferETH(inscriptionFactory, msg.value - crowdFundingRate);
+        } else {
+            // Transfer the fee to the crowdfunding address
+            if(crowdFundingRate > 0) {
+                require(msg.value >= crowdFundingRate, "Send some NULS as crowdfunding");
+                _dispatchFunding(msg.value);
             }
+            
+            // Out of frozen time, free mint. Reset the timestamp and mint times.
+            lastMintFee[msg.sender] = 0;
+            lastMintTimestamp[msg.sender] = block.timestamp;
+        }
+        uint256 totalPercent = 100;
+        uint256 remainingPercent =  totalPercent - uint256(percent);
+        uint256 lastMintNum = limitPerMint * remainingPercent/totalPercent;
+        // Do mint
+        _mint(_to, lastMintNum);
+        if(totalSupply() == cap){
+            flag = 0;
         }
     }
 
-    // Withdraw the NULS tip from the contract
-    function withdraw(address payable _to, uint256 _amount) external onlyOwner {
-        require(_amount <= payable(address(this)).balance);
-        TransferHelper.safeTransferETH(_to, _amount);
-    }
-
-    // Update base fee
-    function updateBaseFee(uint256 _fee) external onlyOwner {
-        baseFee = _fee;
-    }
-
-    function updateInscriptionFee(uint256 _inscriptionFee) external onlyOwner {
-        inscriptionFee = _inscriptionFee;
-    }
-
-
-    // Update funding commission
-    function updateFundingCommission(uint256 _rate) external onlyOwner {
-        fundingCommission = _rate;
-    }
-
-    // Update character's length of tick
-    function updateTickSize(uint8 _size) external onlyOwner {
-        maxTickSize = _size;
-    }
-
-    // migrate v1 inscription to v2
-    function migrateV1Inscriptions() external onlyOwner {
-        require(launched == false, "Already migrated");
-        uint256 totalInscription = IFactory(factoryV1).getInscriptionAmount();
-        for(uint256 i = 1; i <= totalInscription; i++) {
-            (IFactory.Token memory _token, ) = IFactory(factoryV1).getIncriptionById(i);
-            uint256 _id = _inscriptionNumbers.current();
-            inscriptions[_id] = Token(
-                _token.tick, 
-                _token.name, 
-                _token.cap, 
-                _token.limitPerMint, 
-                _token.maxMintSize,
-                _token.inscriptionId,
-                _token.freezeTime,
-                _token.onlyContractAddress,
-                _token.onlyMinQuantity,
-                _token.crowdFundingRate,
-                _token.crowdfundingAddress,
-                _token.minter,
-                _token.addr,
-                _token.timestamp
-            );
-            ticks[_token.tick] = _id;
-
-            _inscriptionNumbers.increment();
+    // batch mint is only available for non-frozen-time tokens
+    function batchMint(address _to, uint256 _num) payable public nonReentrant {
+        require(msg.sender == tx.origin, "only EOA");
+        require(msg.sender == _to, "only self mint");
+        require(_num <= maxMintSize, "exceed max mint size");
+        require(totalSupply() + _num * limitPerMint <= cap, "Touch cap");
+        require(freezeTime == 0, "Batch mint only for non-frozen token");
+        require(onlyContractAddress == address(0x0) || ICommonToken(onlyContractAddress).balanceOf(msg.sender) >= onlyMinQuantity, "You don't have required assets");
+        if(crowdFundingRate > 0) {
+            require(msg.value >= crowdFundingRate * _num, "Crowdfunding NULS not enough");
+            _dispatchFunding(msg.value);
+            // IPancakeRouter01(_contractAddress).addLiquidityETH(address(this),10,10,10,msg.sender(),10);
         }
-        launched = true;
+        for(uint256 i = 0; i < _num; i++)
+        {   
+             uint256 totalPercent = 100;
+             uint256 remainingPercent =  totalPercent - uint256(percent);
+             uint256 lastMintNum = limitPerMint * remainingPercent/totalPercent;
+             _mint(_to, lastMintNum);
+        }
     }
 
-    function strlen(string memory s) internal pure returns (uint256) {
-        uint256 len;
-        uint256 i = 0;
-        uint256 bytelength = bytes(s).length;
+    function getMintFee(address _addr) public view returns(uint256 mintedTimes, uint256 nextMintFee) {
+        if(lastMintTimestamp[_addr] + freezeTime > block.timestamp) {
+            int256 scale = 1e18;
+            int256 halfScale = 5e17;
+            // times = log_2(lastMintFee / baseFee) + 1 (if lastMintFee > 0)
+            nextMintFee = lastMintFee[_addr] == 0 ? baseFee : lastMintFee[_addr] * 2;
+            mintedTimes = uint256((Logarithm.log2(int256(nextMintFee / baseFee) * scale, scale, halfScale) + 1) / scale) + 1;
+        }
+    }
 
-        for (len = 0; i < bytelength; len++) {
-            bytes1 b = bytes(s)[i];
-            if (b < 0x80) {
-                i += 1;
-            } else if (b < 0xE0) {
-                i += 2;
-            } else if (b < 0xF0) {
-                i += 3;
-            } else if (b < 0xF8) {
-                i += 4;
-            } else if (b < 0xFC) {
-                i += 5;
-            } else {
-                i += 6;
+     
+    function getPercent( ) public view returns(uint256 currentPercent) {
+        currentPercent = percent;
+    }
+
+    function getSwpFactoryAddress( ) public view returns(address currentSwapFactoryAddress) {
+        currentSwapFactoryAddress = swapAddress;
+    }
+
+    function getPairAddress( ) public view returns(address currentPairAddress) {
+        currentPairAddress =pairAddress ;
+    }
+
+    //    
+    function _dispatchFunding(uint256 _amount) private {
+        uint256 commission = _amount * fundingCommission / 10000;
+        uint256  remainingAmount =  _amount - commission;
+        if(commission > 0) TransferHelper.safeTransferETH(inscriptionFactory, commission);   
+        if(percent > 0){
+            if(IPancakeFactory(swapAddress).getPair(address(this),wnuls) == address(0)){
+                address pair =  IPancakeFactory(swapAddress).createPair(address(this),wnuls);
+                pairAddress = pair;
+                uint256 lastAmount = limitPerMint*percent/100;
+                _mint(address(this), lastAmount);
+                uint _deadline= block.timestamp + 300;
+                ERC20(address(this)).approve(address(routerAddress),0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff);
+                IPancakeRouter02(address(routerAddress)).addLiquidityETH{value: remainingAmount}(address(this),lastAmount,lastAmount,remainingAmount,address(this),_deadline);
+                uint lpAmount = IPancakePair(pair).balanceOf(address(this));
+                IPancakePair(pair).transfer(address(0x0000000000000000000000000000000000000000),lpAmount);
+                IPancakePair(pair).sync();
+                flag = 1;
+            }else{
+                 //
+                WNULS(wnuls).deposit{value: remainingAmount}();
+                WNULS(wnuls).transfer(pairAddress,remainingAmount);
+                uint256 lastAmount = limitPerMint*percent/100;
+                _mint(pairAddress, lastAmount);
+                IPancakePair(pairAddress).sync();
             }
-        }
-        return len;
+        }else{
+                TransferHelper.safeTransferETH(crowdfundingAddress, remainingAmount); 
+        }            
     }
-
-    function toLower(string memory str) internal pure returns (string memory) {
-		bytes memory bStr = bytes(str);
-		bytes memory bLower = new bytes(bStr.length);
-		for (uint i = 0; i < bStr.length; i++) {
-			if (uint8(bStr[i]) >= 65 && uint8(bStr[i]) <= 90) {
-				bLower[i] = bytes1(uint8(bStr[i]) + 32);
-			} else {
-				bLower[i] = bStr[i];
-			}
-		}
-		return string(bLower);
-	}
-
-    /**
-     * @dev Converts a `uint256` to its ASCII `string` decimal representation.
-     */
-    function toString(uint256 value) internal pure returns (string memory) {
-        // Inspired by OraclizeAPI's implementation - MIT licence
-        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol
-
-        if (value == 0) {
-            return "0";
-        }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
-    }
-
-    function compareStrings(string memory a, string memory b) public pure returns (bool) {
-        return keccak256(abi.encodePacked(a)) == keccak256(abi.encodePacked(b));
-    }
-
-
-
-
 
 
 }
