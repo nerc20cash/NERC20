@@ -22,9 +22,9 @@ interface IFactory {
         address minter;         // The minter of this token
         address addr;           // Contract address of inscribed token 
         uint256 timestamp;      // Inscribe timestamp
+        uint256 percent;
+        address swapAddress; 
     }
-
-
     function getInscriptionAmount() external view returns(uint256);
     function getIncriptionIdByTick(string memory _tick) external view returns(uint256);
     function getIncriptionById(uint256 _id) external view returns(Token memory, uint256);
@@ -39,7 +39,8 @@ contract InscriptionFactoryV2 is Ownable{
     uint256 public baseFee = 1000000000000000000;    // Will charge 1 NULS  as extra min tip from the second time of mint in the frozen period. And this tip will be double for each mint.
     uint256 public inscriptionFee = 10000000000000000000; // Will charge 10 NULS as inscription fee
     uint256 public fundingCommission = 100;       // commission rate of fund raising, 100 means 1%
-    uint256 public maxFrozenTime = 86400;         // The max frozen time is 1 day
+    uint256 public maxFrozenTime = 86400;
+    address public swapFactoryAddress = address(0x6af6Ef18f9d263577722462DA962cdf279299Fd7);         // The max frozen time is 1 day
 
     mapping(uint256 => Token) private inscriptions; // key is inscription id, value is token data
     mapping(string => uint256) private ticks;       // Key is tick, value is inscription id
@@ -101,11 +102,13 @@ contract InscriptionFactoryV2 is Ownable{
         // address _swapAddress
     ) payable external returns (address _inscriptionAddress) {
         require(launched, "Factory is not launched");
-        address _swapAddress = address(0x7bf960B15Cbd9976042257Be3F6Bb2361E107384);
+        address _swapAddress = swapFactoryAddress;
         require(_percent >=0 || _percent <= 100 , "_percent should be 0-100");
         require(strlen(_tick) <= maxTickSize || strlen(_tick) >=4, "Tick lenght should be 4");
         require(strlen(_name) <= maxNameSize, "Name lenght should be less than 20");
         require(_cap >= _limitPerMint, "Limit per mint exceed cap");
+        require(_limitPerMint % 100 == 0, "100 not divisible by  _limitPerMint");
+        require(_cap % _limitPerMint == 0, "Limit per not divisible by _cap");
         if (_onlyContractAddress != address(0)) {
             require(_onlyMinQuantity > 0, "Only min quantity should be greater than zero");
         } else {
@@ -122,7 +125,7 @@ contract InscriptionFactoryV2 is Ownable{
         
         _tick = toLower(_tick);
         require(this.getIncriptionIdByTick(_tick) == 0, "tick is existed");
-        require(IFactory(factoryV1).getIncriptionIdByTick(_tick) == 0, "tick is existed in factory v1");
+        // require(IFactory(factoryV1).getIncriptionIdByTick(_tick) == 0, "tick is existed in factory v1");
 
         require(msg.value >= inscriptionFee, "Insufficient inscription fee");
 
@@ -208,6 +211,9 @@ contract InscriptionFactoryV2 is Ownable{
         }
         return count;
     }
+
+
+
     
     // Fetch inscription data by page no, page size, type and search keyword
     function getIncriptions(
@@ -264,6 +270,11 @@ contract InscriptionFactoryV2 is Ownable{
         baseFee = _fee;
     }
 
+    // Update Launched
+    function updateLaunched(bool flag) external onlyOwner {
+       launched = flag;
+    }
+
     function updateInscriptionFee(uint256 _inscriptionFee) external onlyOwner {
         inscriptionFee = _inscriptionFee;
     }
@@ -271,6 +282,7 @@ contract InscriptionFactoryV2 is Ownable{
 
     // Update funding commission
     function updateFundingCommission(uint256 _rate) external onlyOwner {
+        require(_rate >0 || _rate <= 2000 , "_rate should be 1-2000");
         fundingCommission = _rate;
     }
 
@@ -283,8 +295,6 @@ contract InscriptionFactoryV2 is Ownable{
     function migrateV1Inscriptions() external onlyOwner {
         require(launched == false, "Already migrated");
         uint256 totalInscription = IFactory(factoryV1).getInscriptionAmount();
-        uint256 percent = 0;
-        address swapAddress = address(0x7bf960B15Cbd9976042257Be3F6Bb2361E107384);
         for(uint256 i = 1; i <= totalInscription; i++) {
             (IFactory.Token memory _token, ) = IFactory(factoryV1).getIncriptionById(i);
             uint256 _id = _inscriptionNumbers.current();
@@ -303,8 +313,8 @@ contract InscriptionFactoryV2 is Ownable{
                 _token.minter,
                 _token.addr,
                 _token.timestamp,
-                percent,
-                swapAddress
+                _token.percent,
+                _token.swapAddress
             );
             ticks[_token.tick] = _id;
 
