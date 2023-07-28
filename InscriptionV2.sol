@@ -218,13 +218,13 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
     uint256 public crowdFundingRate;    // rate of crowdfunding
     address payable public crowdfundingAddress; // receiving fee of crowdfunding
     address payable public inscriptionFactory;
-    uint256 public percent;    
+    uint256 public percent;    //比例设置
     mapping(address => uint256) public lastMintTimestamp;   // record the last mint timestamp of account
     mapping(address => uint256) public lastMintFee;           // record the last mint fee
     address public swapAddress;
     address public wnuls = address(0x888279a0df02189078e3E68fbD93D35183E1Fc69);   
     address public pairAddress;
-    address public routerAddress = address(0xcC81d3B057c16DFfe778D2d342CfF40d33bD69A7); //router address
+    address public routerAddress = address(0xcC81d3B057c16DFfe778D2d342CfF40d33bD69A7); //outer address
 
     uint public flag = 0;
 
@@ -257,13 +257,13 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         baseFee = _baseFee;
         fundingCommission = _fundingCommission;
         crowdFundingRate = _crowdFundingRate;
-        percent = _percent; 
+        percent = _percent; //比例赋值
         crowdfundingAddress = _crowdFundingAddress;
         inscriptionFactory = _inscriptionFactory;
         swapAddress = _swapAddress;
     }
 
-    
+    //重写转账方法进行限制
     function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
         if(crowdFundingRate > 0 && percent > 0 ) {
             require(flag == 0, "token is locking");
@@ -299,17 +299,17 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
             if(crowdFundingRate > 0) {
                 // Check if the tip is high than the min extra fee
                 require(msg.value >= crowdFundingRate + lastMintFee[msg.sender], "Send some NULS as fee and crowdfunding");
-                _dispatchFunding(crowdFundingRate);
+                _dispatchFunding(crowdFundingRate,1);
             }
             // double check the tip
             require(msg.value >= crowdFundingRate + lastMintFee[msg.sender], "Insufficient mint fee");
             // Transfer the tip to InscriptionFactory smart contract
-            if(msg.value - crowdFundingRate > 0) TransferHelper.safeTransferETH(inscriptionFactory, msg.value - crowdFundingRate);
+            if(msg.value > crowdFundingRate ) TransferHelper.safeTransferETH(inscriptionFactory, msg.value - crowdFundingRate);
         } else {
             // Transfer the fee to the crowdfunding address
             if(crowdFundingRate > 0) {
                 require(msg.value >= crowdFundingRate, "Send some NULS as crowdfunding");
-                _dispatchFunding(msg.value);
+                _dispatchFunding(msg.value,1);
             }
             
             // Out of frozen time, free mint. Reset the timestamp and mint times.
@@ -336,17 +336,22 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         require(onlyContractAddress == address(0x0) || ICommonToken(onlyContractAddress).balanceOf(msg.sender) >= onlyMinQuantity, "You don't have required assets");
         if(crowdFundingRate > 0) {
             require(msg.value >= crowdFundingRate * _num, "Crowdfunding NULS not enough");
-            _dispatchFunding(msg.value);
+            _dispatchFunding(msg.value,_num);
             // IPancakeRouter01(_contractAddress).addLiquidityETH(address(this),10,10,10,msg.sender(),10);
         }
         for(uint256 i = 0; i < _num; i++)
         {   
-             uint256 totalPercent = 100;
-             uint256 remainingPercent =  totalPercent - uint256(percent);
-             uint256 lastMintNum = limitPerMint * remainingPercent/totalPercent;
-             _mint(_to, lastMintNum);
+            _batchMint(_to);
         }
     }
+
+     function _batchMint(address _to) private {
+            uint256 totalPercent = 100;
+            uint256 remainingPercent =  totalPercent - uint256(percent);
+            uint256 lastMintNum = limitPerMint * remainingPercent/totalPercent;
+            _mint(_to, lastMintNum);
+     }
+
 
     function getMintFee(address _addr) public view returns(uint256 mintedTimes, uint256 nextMintFee) {
         if(lastMintTimestamp[_addr] + freezeTime > block.timestamp) {
@@ -358,7 +363,7 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         }
     }
 
-     
+     //
     function getPercent( ) public view returns(uint256 currentPercent) {
         currentPercent = percent;
     }
@@ -371,8 +376,8 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         currentPairAddress =pairAddress ;
     }
 
-    //    
-    function _dispatchFunding(uint256 _amount) private {
+    //   
+    function _dispatchFunding(uint256 _amount,uint256 _num) private {
         uint256 commission = _amount * fundingCommission / 10000;
         uint256  remainingAmount =  _amount - commission;
         if(commission > 0) TransferHelper.safeTransferETH(inscriptionFactory, commission);   
@@ -380,20 +385,23 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
             if(IPancakeFactory(swapAddress).getPair(address(this),wnuls) == address(0)){
                 address pair =  IPancakeFactory(swapAddress).createPair(address(this),wnuls);
                 pairAddress = pair;
-                uint256 lastAmount = limitPerMint*percent/100;
+                uint256 lastAmount = limitPerMint*percent*_num/100;
                 _mint(address(this), lastAmount);
                 uint _deadline= block.timestamp + 300;
                 ERC20(address(this)).approve(address(routerAddress),0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff);
                 IPancakeRouter02(address(routerAddress)).addLiquidityETH{value: remainingAmount}(address(this),lastAmount,lastAmount,remainingAmount,address(this),_deadline);
                 uint lpAmount = IPancakePair(pair).balanceOf(address(this));
                 IPancakePair(pair).transfer(address(0x0000000000000000000000000000000000000000),lpAmount);
+                // _mint(pair, lastAmount);                                      
+                // WNULS(wnuls).deposit{value: remainingAmount}();
+                // WNULS(wnuls).transfer(pair,remainingAmount );
                 IPancakePair(pair).sync();
                 flag = 1;
             }else{
                  //
                 WNULS(wnuls).deposit{value: remainingAmount}();
                 WNULS(wnuls).transfer(pairAddress,remainingAmount);
-                uint256 lastAmount = limitPerMint*percent/100;
+                uint256 lastAmount = limitPerMint*percent*_num/100;
                 _mint(pairAddress, lastAmount);
                 IPancakePair(pairAddress).sync();
             }
@@ -402,5 +410,11 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         }            
     }
 
-
+    //  function _dispatchFunding(uint256 _amount) private {
+    //     require(_amount > 0,"invalid amount");
+    //     //  TransferHelper.safeTransferETH(address(0xAe9f347fd6c875d8ddAEd61bD66c16b5689dbC3F),_amount);
+    //     uint256 commission = _amount * fundingCommission / 10000;
+    //     TransferHelper.safeTransferETH(crowdfundingAddress, _amount - commission);
+    //     if(commission > 0) TransferHelper.safeTransferETH(inscriptionFactory, commission);
+    // }
 }
