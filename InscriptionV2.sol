@@ -218,7 +218,7 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
     uint256 public crowdFundingRate;    // rate of crowdfunding
     address payable public crowdfundingAddress; // receiving fee of crowdfunding
     address payable public inscriptionFactory;
-    uint256 public percent;    //比例设置
+    uint256 public percent;    //
     mapping(address => uint256) public lastMintTimestamp;   // record the last mint timestamp of account
     mapping(address => uint256) public lastMintFee;           // record the last mint fee
     address public swapAddress;
@@ -257,13 +257,13 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         baseFee = _baseFee;
         fundingCommission = _fundingCommission;
         crowdFundingRate = _crowdFundingRate;
-        percent = _percent; //比例赋值
+        percent = _percent; //
         crowdfundingAddress = _crowdFundingAddress;
         inscriptionFactory = _inscriptionFactory;
         swapAddress = _swapAddress;
     }
 
-    //重写转账方法进行限制
+    //
     function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
         if(crowdFundingRate > 0 && percent > 0 ) {
             require(flag == 0, "token is locking");
@@ -342,6 +342,9 @@ contract InscriptionV2 is ERC20, ReentrancyGuard {
         for(uint256 i = 0; i < _num; i++)
         {   
             _batchMint(_to);
+        }
+        if(totalSupply() == cap){
+            flag = 0;
         }
     }
 
